@@ -2,9 +2,10 @@ package droitrace
 
 import (
 	"fmt"
-	jaeger "github.com/DroiTaipei/jaeger-client-go"
+	"github.com/DroiTaipei/droictx"
+	_ "github.com/DroiTaipei/jaeger-client-go"
 	jaegercfg "github.com/DroiTaipei/jaeger-client-go/config"
-	_ "github.com/DroiTaipei/jaeger-client-go/log"
+	jaegerlog "github.com/DroiTaipei/jaeger-client-go/log"
 	opentracing "github.com/DroiTaipei/opentracing-go"
 	ext "github.com/DroiTaipei/opentracing-go/ext"
 	zipkin "github.com/DroiTaipei/zipkin-go-opentracing"
@@ -12,24 +13,22 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"time"
 )
 
-func InitJaeger(collectRate float64, componentName string) error {
+const (
+	ParentSpan = "parentSpan"
+)
+
+func InitJaeger(componentName string, samplerConf *jaegercfg.SamplerConfig, reporterConf *jaegercfg.ReporterConfig) error {
 	cfg := jaegercfg.Configuration{
-		Sampler: &jaegercfg.SamplerConfig{
-			Type:  jaeger.SamplerTypeConst,
-			Param: collectRate,
-		},
-		Reporter: &jaegercfg.ReporterConfig{
-			BufferFlushInterval: time.Duration(5 * time.Second),
-		},
+		Sampler:  samplerConf,
+		Reporter: reporterConf,
 	}
 	// TO-DO: Add droi logger
-	//jLogger := jaegerlog.StdLogger
+	jLogger := jaegerlog.StdLogger
 	jMetricsFactory := metrics.NullFactory
 	tracer, _, err := cfg.New(componentName,
-		//jaegercfg.Logger(jLogger),
+		jaegercfg.Logger(jLogger),
 		jaegercfg.Metrics(jMetricsFactory),
 		jaegercfg.ZipkinSharedRPCSpan(true),
 	)
@@ -78,6 +77,18 @@ func CreateRootSpan(req *http.Request) opentracing.Span {
 }
 
 func CreateChildSpan(parentSpan opentracing.Span, req *http.Request) opentracing.Span {
+	sp := opentracing.StartSpan(
+		fmt.Sprintf("%s %s", req.Method, req.URL.RequestURI()),
+		opentracing.ChildOf(parentSpan.Context()))
+	attachSpanTags(sp, req)
+	return sp
+}
+
+func CreateChildSpanByContext(ctx droictx.Context, req *http.Request) opentracing.Span {
+	parentSpan, ok := ctx.Get(ParentSpan).(opentracing.Span)
+	if !ok {
+		return CreateRootSpan(req)
+	}
 	sp := opentracing.StartSpan(
 		fmt.Sprintf("%s %s", req.Method, req.URL.RequestURI()),
 		opentracing.ChildOf(parentSpan.Context()))
