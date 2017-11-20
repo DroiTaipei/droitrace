@@ -85,7 +85,14 @@ func CreateChildSpan(parentSpan opentracing.Span, req *http.Request) opentracing
 }
 
 func CreateChildSpanByContext(ctx droictx.Context, req *http.Request) opentracing.Span {
-	parentSpan, ok := ctx.Get(ParentSpan).(opentracing.Span)
+	if ctx == nil {
+		return CreateRootSpan(req)
+	}
+	parentSpanTmp := ctx.Get(ParentSpan)
+	if parentSpanTmp == nil {
+		return CreateRootSpan(req)
+	}
+	parentSpan, ok := parentSpanTmp.(opentracing.Span)
 	if !ok {
 		return CreateRootSpan(req)
 	}
@@ -97,6 +104,25 @@ func CreateChildSpanByContext(ctx droictx.Context, req *http.Request) opentracin
 }
 
 func CreateFollowFromSpan(parentSpan opentracing.Span, req *http.Request) opentracing.Span {
+	sp := opentracing.StartSpan(
+		fmt.Sprintf("%s %s", req.Method, req.URL.RequestURI()),
+		opentracing.FollowsFrom(parentSpan.Context()))
+	attachSpanTags(sp, req)
+	return sp
+}
+
+func CreateFollowFromSpanByContext(ctx droictx.Context, req *http.Request) opentracing.Span {
+	if ctx == nil {
+		return CreateRootSpan(req)
+	}
+	parentSpanTmp := ctx.Get(ParentSpan)
+	if parentSpanTmp == nil {
+		return CreateRootSpan(req)
+	}
+	parentSpan, ok := parentSpanTmp.(opentracing.Span)
+	if !ok {
+		return CreateRootSpan(req)
+	}
 	sp := opentracing.StartSpan(
 		fmt.Sprintf("%s %s", req.Method, req.URL.RequestURI()),
 		opentracing.FollowsFrom(parentSpan.Context()))
