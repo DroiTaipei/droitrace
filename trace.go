@@ -138,18 +138,24 @@ func CreateSpan(spanName string, parentSpan opentracing.Span, relation SpanRefer
 
 func attachSpanTags(sp opentracing.Span, tags *TagsMap) {
 	ext.HTTPMethod.Set(sp, tags.Method)
-	ext.HTTPUrl.Set(sp, tags.URL.String())
-	if host, portString, err := net.SplitHostPort(tags.URL.Host); err == nil {
-		ext.PeerHostname.Set(sp, host)
-		if port, err := strconv.Atoi(portString); err != nil {
-			ext.PeerPort.Set(sp, uint16(port))
+	if tags.URL != nil {
+		ext.HTTPUrl.Set(sp, tags.URL.String())
+		if host, portString, err := net.SplitHostPort(tags.URL.Host); err == nil {
+			ext.PeerHostname.Set(sp, host)
+			if port, err := strconv.Atoi(portString); err != nil {
+				ext.PeerPort.Set(sp, uint16(port))
+			}
+		} else {
+			ext.PeerHostname.Set(sp, tags.URL.Host)
 		}
-	} else {
-		ext.PeerHostname.Set(sp, tags.URL.Host)
 	}
-	SetDroiTagFromHeaders(sp, tags.Header)
-	for k, v := range tags.Others {
-		sp.SetTag(k, v)
+	if tags.Header != nil {
+		SetDroiTagFromHeaders(sp, tags.Header)
+	}
+	if tags.Others != nil {
+		for k, v := range tags.Others {
+			sp.SetTag(k, v)
+		}
 	}
 	return
 }
