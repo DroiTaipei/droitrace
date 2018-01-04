@@ -18,6 +18,8 @@ const (
 	ParentSpan = "parentSpan"
 )
 
+type SpanReference string
+
 func InitJaeger(componentName string, samplerConf *jaegercfg.SamplerConfig, reporterConf *jaegercfg.ReporterConfig) error {
 	cfg := jaegercfg.Configuration{
 		Sampler:  samplerConf,
@@ -52,7 +54,23 @@ func InitZipkin(collector zipkin.Collector, sampler zipkin.Sampler, host, compon
 	return nil
 }
 
-func CreateSpanFromReq(spanName string, req *http.Request) opentracing.Span {
+func ExtractSpanByTagsMap(spanName string, tags *TagsMap) opentracing.Span {
+	var sp opentracing.Span
+	wireContext, err := opentracing.GlobalTracer().Extract(
+		opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(tags.Header))
+	if err != nil {
+		sp = opentracing.StartSpan(spanName)
+	} else {
+		sp = opentracing.StartSpan(
+			spanName,
+			ext.RPCServerOption(wireContext))
+	}
+	attachSpanTags(sp, tags)
+	return sp
+}
+
+func ExtractSpanFromReq(spanName string, req *http.Request) opentracing.Span {
 	var sp opentracing.Span
 	wireContext, err := opentracing.GlobalTracer().Extract(
 		opentracing.HTTPHeaders,
@@ -64,89 +82,82 @@ func CreateSpanFromReq(spanName string, req *http.Request) opentracing.Span {
 			spanName,
 			ext.RPCServerOption(wireContext))
 	}
-	attachSpanTags(sp, req)
+	tags := &TagsMap{
+		Method: req.Method,
+		URL:    req.URL,
+		Header: req.Header,
+	}
+	attachSpanTags(sp, tags)
 	return sp
 }
 
-func CreateRootSpan(spanName string, req *http.Request) opentracing.Span {
-	sp := opentracing.StartSpan(spanName)
-	attachSpanTags(sp, req)
-	return sp
+func CreateSpanFromReq(spaneName string, parentSpan opentracing.Span, relation SpanReference, req *http.Request) opentracing.Span {
+	tags := &TagsMap{
+		Method: req.Method,
+		URL:    req.URL,
+		Header: req.Header,
+	}
+	return CreateSpan(spaneName, parentSpan, relation, tags)
 }
 
-func CreateChildSpan(spanName string, parentSpan opentracing.Span, req *http.Request) opentracing.Span {
-	sp := opentracing.StartSpan(
-		spanName,
-		opentracing.ChildOf(parentSpan.Context()))
-	attachSpanTags(sp, req)
-	return sp
-}
-
-func CreateChildSpanByContext(spanName string, ctx droictx.Context, req *http.Request) opentracing.Span {
+func CreateSpanByContext(spanName string, ctx droictx.Context, relation SpanReference, tags *TagsMap) opentracing.Span {
 	if ctx == nil {
-		return CreateRootSpan(spanName, req)
+		return CreateSpan(spanName, nil, ReferenceRoot, tags)
 	}
 	parentSpanTmp := ctx.Get(ParentSpan)
 	if parentSpanTmp == nil {
-		return CreateRootSpan(spanName, req)
+		return CreateSpan(spanName, nil, ReferenceRoot, tags)
 	}
 	parentSpan, ok := parentSpanTmp.(opentracing.Span)
 	if !ok {
-		return CreateRootSpan(spanName, req)
+		return CreateSpan(spanName, nil, ReferenceRoot, tags)
 	}
-	sp := opentracing.StartSpan(
-		spanName,
-		opentracing.ChildOf(parentSpan.Context()))
-	attachSpanTags(sp, req)
+	return CreateSpan(spanName, parentSpan, relation, tags)
+}
+
+func CreateSpan(spanName string, parentSpan opentracing.Span, relation SpanReference, tags *TagsMap) opentracing.Span {
+	var sp opentracing.Span
+
+	switch relation {
+	case ReferenceRoot:
+		sp = opentracing.StartSpan(spanName)
+		attachSpanTags(sp, tags)
+	case ReferenceChildOf:
+		sp = opentracing.StartSpan(
+			spanName,
+			opentracing.ChildOf(parentSpan.Context()))
+		attachSpanTags(sp, tags)
+	case ReferenceFollowsFrom:
+		sp = opentracing.StartSpan(
+			spanName,
+			opentracing.FollowsFrom(parentSpan.Context()))
+		attachSpanTags(sp, tags)
+	}
 	return sp
 }
 
-func CreateFollowFromSpan(spanName string, parentSpan opentracing.Span, req *http.Request) opentracing.Span {
-	sp := opentracing.StartSpan(
-		spanName,
-		opentracing.FollowsFrom(parentSpan.Context()))
-	attachSpanTags(sp, req)
-	return sp
-}
-
-func CreateFollowFromSpanByContext(spanName string, ctx droictx.Context, req *http.Request) opentracing.Span {
-	if ctx == nil {
-		return CreateRootSpan(spanName, req)
-	}
-	parentSpanTmp := ctx.Get(ParentSpan)
-	if parentSpanTmp == nil {
-		return CreateRootSpan(spanName, req)
-	}
-	parentSpan, ok := parentSpanTmp.(opentracing.Span)
-	if !ok {
-		return CreateRootSpan(spanName, req)
-	}
-	sp := opentracing.StartSpan(
-		spanName,
-		opentracing.FollowsFrom(parentSpan.Context()))
-	attachSpanTags(sp, req)
-	return sp
-}
-
-func attachSpanTags(sp opentracing.Span, req *http.Request) {
-	ext.HTTPMethod.Set(sp, req.Method)
-	ext.HTTPUrl.Set(sp, req.URL.String())
-	if host, portString, err := net.SplitHostPort(req.URL.Host); err == nil {
+func attachSpanTags(sp opentracing.Span, tags *TagsMap) {
+	ext.HTTPMethod.Set(sp, tags.Method)
+	ext.HTTPUrl.Set(sp, tags.URL.String())
+	if host, portString, err := net.SplitHostPort(tags.URL.Host); err == nil {
 		ext.PeerHostname.Set(sp, host)
 		if port, err := strconv.Atoi(portString); err != nil {
 			ext.PeerPort.Set(sp, uint16(port))
 		}
 	} else {
-		ext.PeerHostname.Set(sp, req.URL.Host)
+		ext.PeerHostname.Set(sp, tags.URL.Host)
 	}
-	SetDroiTagFromHeaders(sp, req.Header)
+	SetDroiTagFromHeaders(sp, tags.Header)
+	for k, v := range tags.Others {
+		sp.SetTag(k, v)
+	}
 	return
 }
 
-func InjectSpan(sp opentracing.Span, req *http.Request) error {
+func InjectSpan(sp opentracing.Span, header http.Header) error {
 	if err := sp.Tracer().Inject(sp.Context(),
 		opentracing.TextMap,
-		opentracing.HTTPHeadersCarrier(req.Header)); err != nil {
+		opentracing.HTTPHeadersCarrier(header)); err != nil {
 		return err
 	}
 	return nil
