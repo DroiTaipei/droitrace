@@ -7,7 +7,15 @@ import (
 
 	"fmt"
 	"net/http"
+	"net/url"
 )
+
+type TagsMap struct {
+	Method string
+	URL    *url.URL
+	Header http.Header
+	Others map[string]string
+}
 
 func GenDroiTag(sk string) string {
 	return fmt.Sprintf("droi.%s", sk)
