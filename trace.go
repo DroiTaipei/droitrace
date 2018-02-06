@@ -137,7 +137,9 @@ func CreateSpan(spanName string, parentSpan opentracing.Span, relation SpanRefer
 }
 
 func attachSpanTags(sp opentracing.Span, tags *TagsMap) {
-	ext.HTTPMethod.Set(sp, tags.Method)
+	if len(tags.Method) != 0 {
+		ext.HTTPMethod.Set(sp, tags.Method)
+	}
 	if tags.URL != nil {
 		ext.HTTPUrl.Set(sp, tags.URL.String())
 		if host, portString, err := net.SplitHostPort(tags.URL.Host); err == nil {
